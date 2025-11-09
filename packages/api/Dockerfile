@@ -1,13 +1,13 @@
-# packages/api/Dockerfile (resilient: works whether build context is repo root or packages/api)
+# packages/api/Dockerfile (resilient - works with either build context)
 FROM node:18-alpine
 WORKDIR /app
 
-# Copy whole build context into image
+# Copy build context
 COPY . .
 
 # Install dependencies:
-# - If packages/api/package.json exists, install there.
-# - Otherwise, if package.json exists in the root of the context, install there.
+# - If packages/api/package.json exists in context, install there.
+# - Otherwise, if package.json exists in root of context, install there.
 RUN set -eux; \
     if [ -f packages/api/package.json ]; then \
       cd packages/api; \
@@ -15,14 +15,11 @@ RUN set -eux; \
     elif [ -f package.json ]; then \
       if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi; \
     else \
-      echo "No package.json found in context (neither packages/api nor root). Listing files for debug:"; \
-      ls -la; \
-      exit 1; \
+      echo "No package.json found in build context (neither packages/api nor root)" && ls -la && exit 1; \
     fi
 
 EXPOSE 8080
 ENV NODE_ENV=production
 
-# Start app:
-# - If packages/api exists, start the app there; otherwise assume entrypoint is in the current context at src/index.js
+# Start the app from whichever path exists
 CMD ["sh", "-c", "if [ -f packages/api/src/index.js ]; then node packages/api/src/index.js; elif [ -f src/index.js ]; then node src/index.js; else echo 'entrypoint not found' && exit 1; fi"]
