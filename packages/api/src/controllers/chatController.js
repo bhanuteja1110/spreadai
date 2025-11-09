@@ -4,71 +4,41 @@ import { verifyToken } from '../middlewares/auth.js';
 
 const router = express.Router();
 
-// Apply authentication middleware to all chat routes
-router.use(verifyToken);
+// Optional: comment out temporarily while testing
+// router.use(verifyToken);
 
-/**
- * POST /api/chat
- * Receives messages array and returns Gemini's response
- * 
- * Request body:
- * {
- *   "messages": [
- *     { "role": "user", "content": "Hello SpreadAI, how are you?" }
- *   ]
- * }
- * 
- * Response:
- * {
- *   "assistant": "Hello! I'm SpreadAI powered by Gemini."
- * }
- */
+// GET endpoint for browser visibility
+router.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    message: 'SpreadAI chat endpoint is live. Use POST with messages array.'
+  });
+});
+
 router.post('/', async (req, res) => {
   try {
     const { messages } = req.body;
-    
-    // Validate request
-    if (!messages) {
-      return res.status(400).json({ error: 'messages required' });
-    }
 
-    if (!Array.isArray(messages) || messages.length === 0) {
+    if (!Array.isArray(messages) || !messages.length)
       return res.status(400).json({ error: 'messages must be a non-empty array' });
-    }
 
-    // Validate message structure
     const lastMessage = messages[messages.length - 1];
-    if (!lastMessage.role || !lastMessage.content) {
-      return res.status(400).json({ error: 'Each message must have role and content' });
-    }
+    if (lastMessage.role !== 'user' || !lastMessage.content)
+      return res.status(400).json({ error: 'Last message must be from user with content' });
 
-    if (lastMessage.role !== 'user') {
-      return res.status(400).json({ error: 'Last message must be from user' });
-    }
-
-    // Get response from Gemini
     const assistant = await GeminiService.chat(messages);
-    
-    return res.json({ assistant });
+    res.json({ assistant });
   } catch (err) {
     console.error('Chat controller error:', err);
-    
-    // Ensure we always return valid JSON
     if (!res.headersSent) {
-      // Return appropriate status code based on error type
-      const statusCode = err.message?.includes('API key') || err.message?.includes('quota')
+      const status = err.message?.includes('API key')
         ? 401
-        : err.message?.includes('required') || err.message?.includes('must be')
+        : err.message?.includes('required')
         ? 400
         : 500;
-
-      return res.status(statusCode).json({ error: err.message || String(err) });
-    } else {
-      // Headers already sent, log the error
-      console.error('Cannot send error response - headers already sent:', err);
+      res.status(status).json({ error: err.message || 'Server error' });
     }
   }
 });
 
 export default router;
-

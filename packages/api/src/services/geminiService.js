@@ -1,13 +1,15 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { formatTextForDisplay } from '../utils/textFormatter.js';
+// packages/api/src/services/geminiService.js
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { formatTextForDisplay } from '../utils/textFormatter.js';
+import dotenv from 'dotenv';
+dotenv.config();
 
-let genAI = null;
-let model = null;
+let genClient = null;
+let cachedModel = null;
 
-// Try these models in order of preference
+// Ordered list of models to attempt
 const MODEL_OPTIONS = [
   'gemini-1.5-flash-latest',
   'gemini-1.5-flash',
@@ -17,11 +19,9 @@ const MODEL_OPTIONS = [
   'gemini-pro',
 ];
 
-const MODEL_NAME = process.env.GEMINI_MODEL || MODEL_OPTIONS[0];
+const PREFERRED_MODEL = process.env.GEMINI_MODEL || MODEL_OPTIONS[0];
 
-/**
- * Load persona configuration
- */
+/* ---------- Persona / system prompt ---------- */
 function getPersonaConfig() {
   try {
     const __filename = fileURLToPath(import.meta.url);
@@ -29,244 +29,202 @@ function getPersonaConfig() {
     const personaPath = join(__dirname, '../config/persona.json');
     const personaData = JSON.parse(readFileSync(personaPath, 'utf-8'));
     return personaData;
-  } catch (error) {
-    console.warn('Could not load persona config, using defaults:', error.message);
+  } catch (err) {
+    // fallback defaults
     return {
       name: 'SpreadAI',
-      about_project: 'Spread is a startup aiming to simplify people\'s daily needs through delivery, digital services, and AI tools.',
+      about_project:
+        "Spread is a startup aiming to simplify people's daily needs through delivery, digital services, and AI tools.",
       rules: [
         'Introduce yourself as SpreadAI.',
         'Stay respectful and professional.',
         'Give factual, clear, and simple answers.',
-        'Do not mention who created you or the creator\'s name in your responses.'
+        "Do not mention who created you or the creator's name in your responses."
       ]
     };
   }
 }
 
-/**
- * Build system prompt from persona configuration
- */
 function buildSystemPrompt() {
   const persona = getPersonaConfig();
-  
   let systemPrompt = `You are ${persona.name}.\n\n`;
-  
   if (persona.about_project) {
     systemPrompt += `About the project: ${persona.about_project}\n\n`;
   }
-  
-  if (persona.rules && persona.rules.length > 0) {
+  if (persona.rules && persona.rules.length) {
     systemPrompt += `Rules to follow:\n`;
-    persona.rules.forEach((rule, index) => {
-      systemPrompt += `${index + 1}. ${rule}\n`;
+    persona.rules.forEach((r, i) => {
+      systemPrompt += `${i + 1}. ${r}\n`;
     });
     systemPrompt += '\n';
   }
-  
   systemPrompt += 'Always be helpful, respectful, and provide clear, factual answers.';
-  
   return systemPrompt;
 }
 
-/**
- * Initialize Gemini client (lazy loading)
- */
-function getGeminiClient() {
-  if (!genAI) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === 'REPLACE_ME') {
-      throw new Error('GEMINI_API_KEY is not set. Please set it in packages/api/.env');
-    }
-    genAI = new GoogleGenerativeAI(apiKey);
+/* ---------- Gemini client init (lazy) ---------- */
+async function initGeminiClient() {
+  if (genClient) return genClient;
+
+  const key = process.env.GEMINI_API_KEY;
+  if (!key || key === 'REPLACE_ME') {
+    // no key configured — we'll use fallback behavior elsewhere
+    console.warn('GEMINI_API_KEY not set; Gemini features will be disabled.');
+    return null;
   }
-  return genAI;
+
+  try {
+    // lazy import so local dev or environments without the SDK won't crash at startup
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+    genClient = new GoogleGenerativeAI(key);
+    return genClient;
+  } catch (err) {
+    console.error('Failed to initialize Gemini SDK:', err?.message || err);
+    // return null to indicate client not available
+    return null;
+  }
 }
 
-/**
- * Get the model instance
- */
-function getModel() {
-  if (!model) {
-    const client = getGeminiClient();
-    try {
-      model = client.getGenerativeModel({ model: MODEL_NAME });
-      console.log(`Using Gemini model: ${MODEL_NAME}`);
-    } catch (error) {
-      console.error(`Failed to initialize model ${MODEL_NAME}:`, error.message);
-      throw error;
-    }
-  }
-  return model;
-}
-
-/**
- * Convert messages array to chat history format for Gemini
- * Gemini supports chat format with role-based messages
- */
+/* ---------- Helpers ---------- */
 function formatMessagesForGemini(messages) {
-  if (!messages || messages.length === 0) {
-    throw new Error('No messages provided');
+  // converts {role,content} to Gemini-style chat parts
+  // throws if invalid input
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new Error('messages must be a non-empty array');
   }
-
-  // Get the last user message (most recent)
-  const lastMessage = messages[messages.length - 1];
-  
-  if (lastMessage.role !== 'user') {
-    throw new Error('Last message must be from user');
-  }
-
-  // Convert messages to Gemini's expected format
-  // Gemini uses 'user' and 'model' roles
-  const chatHistory = messages.map(msg => {
-    const role = msg.role === 'user' ? 'user' : 'model';
-    return {
-      role: role,
-      parts: [{ text: msg.content }]
-    };
-  });
-
-  return chatHistory;
+  return messages.map(m => ({
+    role: m.role === 'user' ? 'user' : 'model',
+    parts: [{ text: String(m.content ?? '') }]
+  }));
 }
 
-/**
- * Chat with Gemini API using chat format
- * @param {Array} messages - Array of message objects with role and content
- * @returns {Promise<string>} - Gemini's response
- */
+function safeFallbackResponse() {
+  const persona = getPersonaConfig();
+  return `⚙️ Hi, I'm ${persona.name}. Gemini is currently unavailable or not configured. Please try again later.`;
+}
+
+function normalizeError(err) {
+  const msg = (err && (err.message || String(err))) || 'Unknown error';
+  if (/API key|API_KEY|invalid/i.test(msg)) return { status: 401, message: 'Invalid Gemini API key' };
+  if (/quota|QUOTA_EXCEEDED|quota exceeded/i.test(msg)) return { status: 429, message: 'Gemini quota exceeded' };
+  if (/404|not found/i.test(msg)) return { status: 404, message: 'Specified Gemini model not found' };
+  return { status: 502, message: `Gemini error: ${msg}` };
+}
+
+/* ---------- Core chat function ---------- */
 export default {
+  /**
+   * Chat(messages)
+   * messages: [{role:'user'|'assistant', content:'...'}, ...]
+   * returns string reply (assistant text)
+   */
   async chat(messages) {
-    let lastError = null;
-    
-    // Try the configured model first
+    // If no Gemini key / client available, return graceful fallback
+    const client = await initGeminiClient();
+    if (!client) {
+      return safeFallbackResponse();
+    }
+
+    // Prepare system instruction and chat history
+    const systemPrompt = buildSystemPrompt();
+    let chatHistory;
     try {
-      return await this.tryChatWithModel(MODEL_NAME, messages);
-    } catch (error) {
-      console.warn(`Model ${MODEL_NAME} failed:`, error.message);
-      lastError = error;
-      
-      // If it's a 404/model not found error, try other models
-      if (error.message?.includes('404') || error.message?.includes('not found')) {
-        console.log('Trying alternative models...');
-        
-        for (const modelName of MODEL_OPTIONS) {
-          if (modelName === MODEL_NAME) continue; // Already tried this one
-          
+      chatHistory = formatMessagesForGemini(messages);
+    } catch (err) {
+      throw new Error('Invalid messages: ' + (err.message || String(err)));
+    }
+
+    // Try preferred model then fall back to alternatives
+    const triedModels = [];
+    let lastErr = null;
+
+    const tryModel = async modelName => {
+      triedModels.push(modelName);
+      try {
+        // create model instance
+        const model = client.getGenerativeModel({ model: modelName, systemInstruction: systemPrompt });
+
+        // If there is history (more than only the current message) use chat sessions
+        if (chatHistory.length > 1) {
+          const history = chatHistory.slice(0, -1);
+          const last = chatHistory[chatHistory.length - 1];
+          const userText = last.parts[0].text;
+
+          // startChat API (SDK shape may differ depending on version)
+          // We'll try both patterns so this code is resilient:
+          if (typeof model.startChat === 'function') {
+            const chat = model.startChat({ history });
+            const result = await chat.sendMessage(userText);
+            const text = result?.response?.text?.();
+            if (!text) throw new Error('Empty response from Gemini');
+            return formatTextForDisplay(text);
+          } else if (typeof model.generateContent === 'function') {
+            // fallback to a generateContent call with context included
+            const prompt = (history.map(h => `${h.role}: ${h.parts.map(p => p.text).join(' ')}`).join('\n') + '\n' + `user: ${userText}`);
+            const result = await model.generateContent(prompt);
+            const text = result?.response?.text?.();
+            if (!text) throw new Error('Empty response from Gemini');
+            return formatTextForDisplay(text);
+          } else {
+            throw new Error('Model does not support chat or generateContent in this SDK version');
+          }
+        } else {
+          // single message - generate content directly
+          const last = chatHistory[chatHistory.length - 1];
+          const userText = last.parts[0].text;
+          if (typeof model.generateContent === 'function') {
+            const result = await model.generateContent(userText);
+            const text = result?.response?.text?.();
+            if (!text) throw new Error('Empty response from Gemini');
+            return formatTextForDisplay(text);
+          } else if (typeof model.startChat === 'function') {
+            const chat = model.startChat();
+            const result = await chat.sendMessage(userText);
+            const text = result?.response?.text?.();
+            if (!text) throw new Error('Empty response from Gemini');
+            return formatTextForDisplay(text);
+          } else {
+            throw new Error('Model does not support generateContent or startChat');
+          }
+        }
+      } catch (err) {
+        lastErr = err;
+        const errMsg = (err && (err.message || String(err))) || '';
+        // If model not found, signal upstream to try other models
+        if (/404|not found/i.test(errMsg) || /model not found/i.test(errMsg)) {
+          throw new Error(`MODEL_NOT_FOUND: ${modelName} -> ${errMsg}`);
+        }
+        // Bubble up other errors to be handled by the caller
+        throw err;
+      }
+    };
+
+    // First try PREFERRED_MODEL and on specific model-not-found errors loop alternatives
+    try {
+      return await tryModel(PREFERRED_MODEL);
+    } catch (err) {
+      // if it's a MODEL_NOT_FOUND, try alternatives; otherwise consider fallback
+      const msg = (err && (err.message || String(err))) || '';
+      if (/MODEL_NOT_FOUND/i.test(msg) || /404|not found/i.test(msg)) {
+        // try alternatives
+        for (const alt of MODEL_OPTIONS) {
+          if (alt === PREFERRED_MODEL) continue;
           try {
-            console.log(`Trying model: ${modelName}`);
-            return await this.tryChatWithModel(modelName, messages);
-          } catch (err) {
-            console.warn(`Model ${modelName} failed:`, err.message);
-            lastError = err;
+            return await tryModel(alt);
+          } catch (e) {
+            // continue trying
+            lastErr = e;
             continue;
           }
         }
+      } else {
+        lastErr = err;
       }
     }
 
-    // If we get here, all models failed
-    throw this.handleError(lastError);
-  },
-
-  /**
-   * Try to chat with a specific model
-   */
-  async tryChatWithModel(modelName, messages) {
-    const client = getGeminiClient();
-    const systemPrompt = buildSystemPrompt();
-    const chatHistory = formatMessagesForGemini(messages);
-
-    // Create model with system instruction
-    const geminiModel = client.getGenerativeModel({ 
-      model: modelName,
-      systemInstruction: systemPrompt
-    });
-
-    // If we have conversation history, use chat format
-    if (chatHistory.length > 1) {
-      const history = chatHistory.slice(0, -1); // All messages except the last one
-      const lastMessage = chatHistory[chatHistory.length - 1];
-      const userMessage = lastMessage.parts[0].text;
-
-      // Start a chat session with history
-      const chat = geminiModel.startChat({
-        history: history,
-      });
-
-      // Send the message and get response
-      const result = await chat.sendMessage(userMessage);
-      const response = result.response;
-      let text = response.text();
-
-      if (!text) {
-        throw new Error('Empty response from Gemini');
-      }
-
-      // Format the text to remove markdown and improve readability
-      text = formatTextForDisplay(text);
-
-      // If this model worked, cache it for future use
-      if (modelName !== MODEL_NAME) {
-        console.log(`Successfully using model: ${modelName}. Consider setting GEMINI_MODEL=${modelName} in .env`);
-        model = geminiModel;
-      }
-
-      return text;
-    } else {
-      // Single message - use simple generateContent
-      const lastMessage = chatHistory[0];
-      const userMessage = lastMessage.parts[0].text;
-
-      const result = await geminiModel.generateContent(userMessage);
-      const response = result.response;
-      let text = response.text();
-
-      if (!text) {
-        throw new Error('Empty response from Gemini');
-      }
-
-      // Format the text to remove markdown and improve readability
-      text = formatTextForDisplay(text);
-
-      // Cache the working model
-      if (modelName !== MODEL_NAME) {
-        console.log(`Successfully using model: ${modelName}. Consider setting GEMINI_MODEL=${modelName} in .env`);
-        model = geminiModel;
-      }
-
-      return text;
-    }
-  },
-
-  /**
-   * Handle errors with helpful messages
-   */
-  handleError(error) {
-    console.error('Gemini API Error:', error);
-
-    // Handle model not found error
-    if (error.message?.includes('404') || error.message?.includes('not found')) {
-      return new Error(
-        `No available Gemini models found. Please check your API key. ` +
-        `Tried models: ${MODEL_OPTIONS.join(', ')}. ` +
-        `You can set GEMINI_MODEL in .env to specify a model.`
-      );
-    }
-
-    // Handle specific Gemini API errors
-    if (error.message?.includes('API_KEY_INVALID') || error.message?.includes('API key')) {
-      return new Error('Invalid Gemini API key. Please check your GEMINI_API_KEY in .env');
-    }
-
-    if (error.message?.includes('quota') || error.message?.includes('QUOTA_EXCEEDED')) {
-      return new Error('Gemini API quota exceeded. Please check your usage limits.');
-    }
-
-    if (error.message?.includes('SAFETY') || error.message?.includes('safety')) {
-      return new Error('Content was blocked by Gemini safety filters.');
-    }
-
-    // Generic error
-    return new Error(`Gemini API error: ${error.message || 'Unknown error'}`);
+    // If everything fails, return a helpful error message (not raw stack)
+    const normalized = normalizeError(lastErr || new Error('Unknown Gemini error'));
+    // Throwing an Error lets the controller convert to proper HTTP response (status/code)
+    throw new Error(normalized.message);
   }
 };
