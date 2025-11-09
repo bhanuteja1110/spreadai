@@ -1,0 +1,14 @@
+{
+  "name": "spreadai-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node --watch src/ingest.js",
+    "start": "node src/ingest.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "openai": "^4.0.0"
+  }
+}
+

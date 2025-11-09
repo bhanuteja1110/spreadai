@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+packages/*/node_modules/
+**/node_modules/
+
+# Environment variables
+.env
+packages/*/.env
+*.env
+!*.env.example
+
+# Build outputs
+dist/
+build/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Firebase service account keys
+*-firebase-adminsdk-*.json
+firebase-adminsdk-*.json
+spread-23ece-firebase-adminsdk-*.json
+**/firebase-adminsdk-*.json
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Production
+.env.production
+.env.local
+
+# Git
+.git/

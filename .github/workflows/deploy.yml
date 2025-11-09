@@ -1,0 +1,15 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger remote deploy (replace with your provider's action)
+        run: echo "Configure deploy steps for your cloud provider (Vercel/Render/AWS)"
+
