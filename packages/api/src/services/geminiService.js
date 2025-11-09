@@ -48,6 +48,9 @@ function getPersonaConfig() {
 function buildSystemPrompt() {
   const persona = getPersonaConfig();
   let systemPrompt = `You are ${persona.name}.\n\n`;
+  if (persona.greeting) {
+    systemPrompt += `Greeting: ${persona.greeting}\n\n`;
+  }
   if (persona.about_project) {
     systemPrompt += `About the project: ${persona.about_project}\n\n`;
   }
