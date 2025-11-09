@@ -77,7 +77,7 @@ export default function ChatApp({ user }) {
     try {
       const token = await user.getIdToken()
       
-      const resp = await fetch('/api/chat', {
+      const resp = await fetch('https://spreadai.onrender.com/api/chat', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
