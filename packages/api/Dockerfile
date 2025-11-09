@@ -1,20 +1,23 @@
+# packages/api/Dockerfile
 FROM node:18-alpine
 WORKDIR /app
 
-# copy package manifests first to leverage Docker cache
-COPY package*.json ./
-COPY package.json ./packages/api/package.json
+# Copy package manifests first (for caching)
+COPY packages/api/package.json ./packages/api/package.json
+# Copy lockfile if it exists
+COPY packages/api/package-lock.json ./packages/api/package-lock.json
 
-# Copy everything so that if a package-lock exists it gets used
+# Install dependencies
+RUN cd packages/api && \
+    if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+
+# Copy all project files
 COPY . .
 
-# Prefer npm ci if a package-lock exists; otherwise fallback to npm install
-RUN if [ -f packages/api/package-lock.json ]; then \
-      cd packages/api && npm ci --omit=dev ; \
-    else \
-      cd packages/api && npm install --omit=dev ; \
-    fi
-
+# Expose port (for Render)
 EXPOSE 8080
+
 ENV NODE_ENV=production
-CMD ["node", "src/index.js"]
+
+# Start the API
+CMD ["node", "packages/api/src/index.js"]
