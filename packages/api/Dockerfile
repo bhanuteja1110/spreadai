@@ -1,20 +1,28 @@
-# packages/api/Dockerfile
+# packages/api/Dockerfile (resilient: works whether build context is repo root or packages/api)
 FROM node:18-alpine
-
-# set workdir
 WORKDIR /app
 
-# copy entire repo into image (keeps build simple and avoids context issues)
+# Copy whole build context into image
 COPY . .
 
-# Install only the API's production deps (fallback if no lockfile)
-RUN cd packages/api && \
-    if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+# Install dependencies:
+# - If packages/api/package.json exists, install there.
+# - Otherwise, if package.json exists in the root of the context, install there.
+RUN set -eux; \
+    if [ -f packages/api/package.json ]; then \
+      cd packages/api; \
+      if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi; \
+    elif [ -f package.json ]; then \
+      if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi; \
+    else \
+      echo "No package.json found in context (neither packages/api nor root). Listing files for debug:"; \
+      ls -la; \
+      exit 1; \
+    fi
 
-# expose port for Render (informational)
 EXPOSE 8080
-
 ENV NODE_ENV=production
 
-# start app (ensure this path exists in your repo)
-CMD ["node", "packages/api/src/index.js"]
+# Start app:
+# - If packages/api exists, start the app there; otherwise assume entrypoint is in the current context at src/index.js
+CMD ["sh", "-c", "if [ -f packages/api/src/index.js ]; then node packages/api/src/index.js; elif [ -f src/index.js ]; then node src/index.js; else echo 'entrypoint not found' && exit 1; fi"]
